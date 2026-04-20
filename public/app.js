@@ -715,7 +715,7 @@ function renderMapCard(m, showFav, favSet = new Set(), isFavView = false) {
         </div>
       </div>
       <div class="map-action">
-        ${m.estPP ? `<div class="pp-estimate">~${Math.round(m.estPP)}<span class="pp-label">est. pp</span></div>` : ''}
+        ${m.estPP ? `<div class="pp-estimate">+${Math.round(m.estPP)}<span class="pp-label">est. pp</span></div>` : ''}
         <div style="display: flex; gap: 6px;">
           ${showFav && currentUser ? `<button class="fav-btn ${isFav?'active':''}" data-id="${m.id}" data-meta='${escapeHtml(JSON.stringify(meta))}'>${isFav ? '★ Saved' : '☆ Save'}</button>` : ''}
           <a class="map-link" href="${m.url}" target="_blank" rel="noopener">Open →</a>
