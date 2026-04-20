@@ -192,7 +192,7 @@ function renderHome() {
       <div class="feature">
         <div class="icon">🔐</div>
         <h3>One-click login</h3>
-        <p>Sign in with osu! — no passwords, no credentials to set up. We store only what we need.</p>
+        <p>Sign in with osu! — no passwords, no credentials to set up. I store only what i need.(Which like isnt anything really) I also dont care about your info tbh. I just want to help people out.</p>
       </div>
     </section>
   `;
@@ -776,7 +776,7 @@ function renderMapCard(m, showFav, favSet = new Set(), isFavView = false) {
         </div>
       </div>
       <div class="map-action">
-        ${m.estPP ? `<div class="pp-estimate">+${Math.round(m.estPP)}<span class="pp-label">est. pp</span></div>` : ''}
+        ${m.estPP ? `<div class="pp-estimate">~${Math.round(m.estPP)}<span class="pp-label">est. pp</span></div>` : ''}
         <div style="display: flex; gap: 6px;">
           ${showFav && currentUser ? `<button class="fav-btn ${isFav?'active':''}" data-id="${m.id}" data-meta='${escapeHtml(JSON.stringify(meta))}'>${isFav ? '★ Saved' : '☆ Save'}</button>` : ''}
           <a class="map-link" href="${m.url}" target="_blank" rel="noopener">Open →</a>
