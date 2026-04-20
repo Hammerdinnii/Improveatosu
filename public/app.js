@@ -668,7 +668,6 @@ function statCard(label, value) {
 
 function renderSkillSummary(a) {
   if (!a) return '';
-  const modList = (a.topMods || []).map(([m, c]) => `<strong>${m === 'NM' ? 'NoMod' : m}</strong> (${c})`).join(' · ');
   const bpmBand = a.weightedBPM < 160 ? 'slow to mid' : a.weightedBPM < 200 ? 'mid' : a.weightedBPM < 230 ? 'high' : 'very high';
   const lengthBand = a.weightedLength < 90 ? 'short' : a.weightedLength < 180 ? 'mid-length' : 'long';
   const target = Math.round(a.avgTop10 * 1.15);
@@ -682,9 +681,71 @@ function renderSkillSummary(a) {
       <div class="profile-summary">
         Your top play is worth <span class="num">${Math.round(a.topPP)}pp</span>. Average of your top 10 is <span class="num">${Math.round(a.avgTop10)}pp</span>.<br/>
         Your PP-weighted star rating sits at <strong>${a.weightedStars.toFixed(2)}★</strong>, with most top plays landing between <strong>${a.starRange.p25.toFixed(2)}★ and ${a.starRange.p75.toFixed(2)}★</strong>.<br/>
-        You perform best around <strong>${Math.round(a.weightedBPM)} BPM</strong> (${bpmBand}), on <strong>${lengthBand}</strong> maps (~${Math.round(a.weightedLength/60)}min), averaging <strong>${a.weightedAcc.toFixed(2)}%</strong> accuracy on your top plays.<br/>
-        Most-used mod combos: ${modList || 'NoMod'}.<br/><br/>
+        You perform best around <strong>${Math.round(a.weightedBPM)} BPM</strong> (${bpmBand}), on <strong>${lengthBand}</strong> maps (~${Math.round(a.weightedLength/60)}min), averaging <strong>${a.weightedAcc.toFixed(2)}%</strong> accuracy on your top plays.<br/><br/>
         <strong>PP-gain target:</strong> a new play worth ~<span class="num">${target}pp</span> or more would enter your top 10 and raise your profile.
+      </div>
+    </section>
+    ${renderModAnalysis(a.modAnalysis)}
+  `;
+}
+
+function renderModAnalysis(modAnalysis) {
+  if (!modAnalysis || !modAnalysis.length) return '';
+
+  const ranked = modAnalysis.slice().sort((a, b) => b.avgPP - a.avgPP);
+  const topMod = ranked[0];
+  const nm = modAnalysis.find(m => m.mod === 'NM');
+
+  const medals = ['🥇', '🥈', '🥉'];
+  const rows = ranked.slice(0, 5).map((m, i) => {
+    const medal = medals[i] || '  ';
+    const modLabel = m.mod === 'NM' ? 'NoMod' : m.mod;
+    const pct = m.percentage.toFixed(0);
+    const avgPP = Math.round(m.avgPP);
+    const avgAcc = m.avgAcc.toFixed(2);
+    const top = Math.round(m.topPP);
+
+    let delta = '';
+    if (m.ppDeltaVsNM != null) {
+      const sign = m.ppDeltaVsNM >= 0 ? '+' : '';
+      const color = m.ppDeltaVsNM >= 0 ? 'var(--success)' : 'var(--danger)';
+      delta = ` <span style="color:${color}; font-size: 12px; font-family: var(--font-mono);">${sign}${m.ppDeltaVsNM.toFixed(1)}% vs NM</span>`;
+    }
+
+    return `
+      <div class="mod-row">
+        <div class="mod-rank">${medal}</div>
+        <div class="mod-name"><strong>${modLabel}</strong>${delta}</div>
+        <div class="mod-stat"><span class="mod-stat-label">usage</span><span class="mod-stat-val">${pct}%</span></div>
+        <div class="mod-stat"><span class="mod-stat-label">avg pp</span><span class="mod-stat-val">${avgPP}</span></div>
+        <div class="mod-stat"><span class="mod-stat-label">avg acc</span><span class="mod-stat-val">${avgAcc}%</span></div>
+        <div class="mod-stat"><span class="mod-stat-label">best</span><span class="mod-stat-val">${top}pp</span></div>
+      </div>
+    `;
+  }).join('');
+
+  let insight = '';
+  if (nm && topMod && topMod.mod !== 'NM' && nm.avgPP > 0) {
+    const ppGain = ((topMod.avgPP - nm.avgPP) / nm.avgPP * 100).toFixed(0);
+    const accDrop = (nm.avgAcc - topMod.avgAcc).toFixed(2);
+    const topLabel = topMod.mod === 'NM' ? 'NoMod' : topMod.mod;
+    insight = `💡 <strong>${topLabel}</strong> gives you <strong>~${ppGain}% more pp</strong> than NoMod on average` +
+      (accDrop > 0.1 ? `, though your accuracy drops ${accDrop}%. Still your best mod by a wide margin.` : ` with no accuracy loss. Lean into it.`);
+  } else if (topMod && topMod.mod === 'NM') {
+    insight = `💡 You play mostly <strong>NoMod</strong> and that's where you earn pp. Try experimenting with <strong>HD</strong> or <strong>HR</strong> for extra multipliers on comfortable maps.`;
+  }
+
+  return `
+    <section class="slide-in" style="margin-top: 24px;">
+      <div class="section-header">
+        <h3>Your mod playstyle</h3>
+        <span class="sub">ranked by avg pp per play</span>
+      </div>
+      <div class="mod-analysis">
+        <div class="mod-rows">
+          ${rows}
+        </div>
+        ${insight ? `<div class="mod-insight">${insight}</div>` : ''}
       </div>
     </section>
   `;
