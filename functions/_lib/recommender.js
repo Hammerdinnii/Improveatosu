@@ -33,12 +33,49 @@ export function analyzeSkill(scores, user) {
     return stars[lo] + (stars[hi] - stars[lo]) * (i - lo);
   };
 
-  const modCounts = {};
+  // Deep mod analysis: per-mod performance metrics
+  const modStats = {};
   rated.forEach(s => {
-    const key = (s.mods && s.mods.length) ? [...s.mods].sort().join('') : 'NM';
-    modCounts[key] = (modCounts[key] || 0) + 1;
+    // Ignore mods that don't affect pp
+    const meaningful = (s.mods || []).filter(m => !['NF', 'SO', 'SD', 'PF'].includes(m));
+    const key = meaningful.length ? [...meaningful].sort().join('') : 'NM';
+    if (!modStats[key]) {
+      modStats[key] = { count: 0, totalPP: 0, totalAcc: 0, topPP: 0 };
+    }
+    modStats[key].count++;
+    modStats[key].totalPP += s.pp;
+    modStats[key].totalAcc += s.accuracy * 100;
+    modStats[key].topPP = Math.max(modStats[key].topPP, s.pp);
   });
-  const topMods = Object.entries(modCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  const modAnalysis = Object.entries(modStats).map(([mod, s]) => ({
+    mod,
+    count: s.count,
+    percentage: (s.count / rated.length) * 100,
+    avgPP: s.totalPP / s.count,
+    avgAcc: s.totalAcc / s.count,
+    topPP: s.topPP,
+    effectiveness: s.totalPP / s.count,
+  }));
+
+  modAnalysis.sort((a, b) => b.effectiveness - a.effectiveness);
+
+  const nmStats = modAnalysis.find(m => m.mod === 'NM');
+  modAnalysis.forEach(m => {
+    if (nmStats && m.mod !== 'NM' && nmStats.avgPP > 0) {
+      m.ppDeltaVsNM = ((m.avgPP - nmStats.avgPP) / nmStats.avgPP) * 100;
+      m.accDeltaVsNM = m.avgAcc - nmStats.avgAcc;
+    } else {
+      m.ppDeltaVsNM = null;
+      m.accDeltaVsNM = null;
+    }
+  });
+
+  const topMods = modAnalysis
+    .slice()
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map(m => [m.mod, m.count]);
 
   const ownedBeatmaps = new Set(rated.map(s => s.beatmap.id));
 
@@ -55,8 +92,8 @@ export function analyzeSkill(scores, user) {
       p25: pct(0.25), p50: pct(0.5), p75: pct(0.75), p90: pct(0.9),
     },
     topMods,
+    modAnalysis,
     ownedBeatmaps,
-    user,
   };
 }
 
