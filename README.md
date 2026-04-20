@@ -1,4 +1,4 @@
-# pp.farm — osu! PP recommender
+# improve at osu
 
 A Cloudflare Pages app that lets osu! players log in, analyze their skill profile, and get personalized map recommendations.
 
