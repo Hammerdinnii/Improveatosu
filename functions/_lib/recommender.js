@@ -36,18 +36,20 @@ export function analyzeSkill(scores, user) {
   // Deep mod analysis: per-mod performance metrics
   const modStats = {};
   rated.forEach(s => {
-    // Ignore mods that don't affect pp
+    // Normalize mod key — ignore meaningless mods like NF/SO/SD that don't affect pp
     const meaningful = (s.mods || []).filter(m => !['NF', 'SO', 'SD', 'PF'].includes(m));
     const key = meaningful.length ? [...meaningful].sort().join('') : 'NM';
     if (!modStats[key]) {
-      modStats[key] = { count: 0, totalPP: 0, totalAcc: 0, topPP: 0 };
+      modStats[key] = { count: 0, totalPP: 0, totalAcc: 0, topPP: 0, plays: [] };
     }
     modStats[key].count++;
     modStats[key].totalPP += s.pp;
     modStats[key].totalAcc += s.accuracy * 100;
     modStats[key].topPP = Math.max(modStats[key].topPP, s.pp);
+    modStats[key].plays.push({ pp: s.pp, acc: s.accuracy * 100 });
   });
 
+  // Compute averages and rank by effectiveness (weighted pp contribution)
   const modAnalysis = Object.entries(modStats).map(([mod, s]) => ({
     mod,
     count: s.count,
@@ -55,11 +57,14 @@ export function analyzeSkill(scores, user) {
     avgPP: s.totalPP / s.count,
     avgAcc: s.totalAcc / s.count,
     topPP: s.topPP,
+    // "effectiveness" = avg pp per play — the real measure of which mod gets you pp
     effectiveness: s.totalPP / s.count,
   }));
 
+  // Sort by effectiveness (avg pp per play), not count
   modAnalysis.sort((a, b) => b.effectiveness - a.effectiveness);
 
+  // Compare each mod to NM baseline for pp-gain insights
   const nmStats = modAnalysis.find(m => m.mod === 'NM');
   modAnalysis.forEach(m => {
     if (nmStats && m.mod !== 'NM' && nmStats.avgPP > 0) {
@@ -71,6 +76,7 @@ export function analyzeSkill(scores, user) {
     }
   });
 
+  // Keep legacy `topMods` for anything else that might use it
   const topMods = modAnalysis
     .slice()
     .sort((a, b) => b.count - a.count)
@@ -94,6 +100,7 @@ export function analyzeSkill(scores, user) {
     topMods,
     modAnalysis,
     ownedBeatmaps,
+    user,
   };
 }
 
