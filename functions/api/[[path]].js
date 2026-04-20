@@ -229,6 +229,7 @@ function publicAnalysis(a) {
     weightedAcc: a.weightedAcc,
     starRange: a.starRange,
     topMods: a.topMods,
+    modAnalysis: a.modAnalysis,
   };
 }
 
