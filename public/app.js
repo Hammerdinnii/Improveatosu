@@ -140,7 +140,7 @@ function renderHome() {
 
   app.innerHTML = `
     <section class="hero slide-in">
-      <h1>gain pp.<br/><span class="accent">smarter</span>.</h1>
+      <h1>Improve osu scores<br/><span class="accent">smarter</span>.</h1>
       <p>Pull your osu! top plays, analyze your skill profile, and get a curated list of maps scoped to your level — picked to push your PP without wasting retries on stuff too hard or too easy.</p>
       <div class="hero-actions">
         ${currentUser
@@ -187,7 +187,7 @@ function renderHome() {
       <div class="feature">
         <div class="icon">🔥</div>
         <h3>Trending</h3>
-        <p>See what maps the pp.farm community is grinding right now, per mode and strategy.</p>
+        <p>See what maps the community is grinding right now, per mode and strategy.</p>
       </div>
       <div class="feature">
         <div class="icon">🔐</div>
@@ -600,7 +600,7 @@ async function loadTrending(strategy) {
         <div class="empty">
           <div class="icon">🔥</div>
           <h3>Not enough data yet</h3>
-          <p>Trending fills up as players use pp.farm. Check back soon, or run a recommendation to contribute.</p>
+          <p>Trending fills up as players use this. Check back soon, or run a recommendation to contribute.</p>
         </div>
       `;
       return;
