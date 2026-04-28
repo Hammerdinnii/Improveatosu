@@ -391,6 +391,53 @@ async function renderHistory() {
   await loadHistory();
 }
 
+// State for the chart so we can re-render when the user switches stats
+let historyChartState = {
+  history: [],
+  activeStat: 'pp',
+  hover: null, // { idx, x, y } when hovering a point
+};
+
+const STAT_DEFS = {
+  pp: {
+    key: 'pp',
+    label: 'PP',
+    color: '#ff66aa',
+    fillGrad: ['rgba(255, 102, 170, 0.45)', 'rgba(255, 102, 170, 0)'],
+    format: (v) => Math.round(v).toLocaleString() + 'pp',
+    formatAxis: (v) => Math.round(v) + 'pp',
+    higherIsBetter: true,
+  },
+  global_rank: {
+    key: 'global_rank',
+    label: 'Global rank',
+    color: '#66ffee',
+    fillGrad: ['rgba(102, 255, 238, 0.35)', 'rgba(102, 255, 238, 0)'],
+    format: (v) => '#' + Math.round(v).toLocaleString(),
+    formatAxis: (v) => '#' + shortNum(Math.round(v)),
+    higherIsBetter: false, // lower is better for rank
+    invertY: true,
+  },
+  accuracy: {
+    key: 'accuracy',
+    label: 'Accuracy',
+    color: '#ffdd55',
+    fillGrad: ['rgba(255, 221, 85, 0.35)', 'rgba(255, 221, 85, 0)'],
+    format: (v) => v.toFixed(2) + '%',
+    formatAxis: (v) => v.toFixed(2) + '%',
+    higherIsBetter: true,
+  },
+  playcount: {
+    key: 'playcount',
+    label: 'Playcount',
+    color: '#9966ff',
+    fillGrad: ['rgba(153, 102, 255, 0.35)', 'rgba(153, 102, 255, 0)'],
+    format: (v) => Math.round(v).toLocaleString(),
+    formatAxis: (v) => shortNum(Math.round(v)),
+    higherIsBetter: true,
+  },
+};
+
 async function loadHistory() {
   const body = document.getElementById('historyBody');
   try {
@@ -404,28 +451,94 @@ async function loadHistory() {
         <div class="empty">
           <div class="icon">📈</div>
           <h3>Not enough data yet</h3>
-          <p>History is captured each time you open your dashboard. Come back after a few sessions to see your PP curve.</p>
+          <p>History is captured each time you open your dashboard. Come back after a few sessions to see your curve.</p>
         </div>
       `;
       return;
     }
 
+    historyChartState.history = history;
+    historyChartState.activeStat = 'pp';
+    historyChartState.hover = null;
+
     body.innerHTML = `
+      <div class="chart-stat-tabs">
+        ${Object.values(STAT_DEFS).map(s => `
+          <button class="chart-stat-tab ${s.key === 'pp' ? 'active' : ''}" data-stat="${s.key}" style="--stat-color: ${s.color};">
+            <span class="chart-stat-dot" style="background: ${s.color};"></span>
+            ${s.label}
+          </button>
+        `).join('')}
+      </div>
       <div class="chart-wrap slide-in">
-        <canvas id="ppChart"></canvas>
+        <canvas id="historyChart"></canvas>
+        <div id="chartTooltip" class="chart-tooltip" style="display:none"></div>
       </div>
-      <div class="stats-grid">
-        ${statCard('First snapshot', new Date(history[0].snapshot_at * 1000).toLocaleDateString())}
-        ${statCard('Latest PP', Math.round(history[history.length-1].pp) + 'pp')}
-        ${statCard('Δ PP', formatDelta(history[history.length-1].pp - history[0].pp) + 'pp')}
-        ${statCard('Δ Global rank', formatRankDelta(history[0].global_rank, history[history.length-1].global_rank))}
-        ${statCard('Snapshots', history.length)}
-      </div>
+      <div class="stats-grid" id="historyStats"></div>
     `;
-    drawChart(history);
+
+    // Tab clicks
+    body.querySelectorAll('.chart-stat-tab').forEach(t => {
+      t.addEventListener('click', () => {
+        body.querySelectorAll('.chart-stat-tab').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        historyChartState.activeStat = t.dataset.stat;
+        historyChartState.hover = null;
+        drawHistoryChart();
+        renderHistoryStats();
+      });
+    });
+
+    // Initial draw
+    drawHistoryChart();
+    renderHistoryStats();
+
+    // Hover handling on canvas
+    const canvas = document.getElementById('historyChart');
+    canvas.addEventListener('mousemove', handleChartHover);
+    canvas.addEventListener('mouseleave', () => {
+      historyChartState.hover = null;
+      drawHistoryChart();
+      document.getElementById('chartTooltip').style.display = 'none';
+    });
+
+    // Re-render on resize
+    window.addEventListener('resize', () => {
+      if (location.pathname === '/history') drawHistoryChart();
+    }, { once: true });
   } catch (e) {
     setStatus('Error: ' + e.message, 'error');
   }
+}
+
+function renderHistoryStats() {
+  const el = document.getElementById('historyStats');
+  if (!el) return;
+  const h = historyChartState.history;
+  const stat = STAT_DEFS[historyChartState.activeStat];
+  const first = h[0][stat.key];
+  const last = h[h.length - 1][stat.key];
+  const delta = last - first;
+
+  let deltaDisplay;
+  if (stat.key === 'global_rank') {
+    deltaDisplay = formatRankDelta(first, last);
+  } else if (delta === 0) {
+    deltaDisplay = '—';
+  } else {
+    const sign = delta > 0 ? '+' : '';
+    if (stat.key === 'accuracy') deltaDisplay = sign + delta.toFixed(2) + '%';
+    else if (stat.key === 'pp') deltaDisplay = sign + Math.round(delta) + 'pp';
+    else deltaDisplay = sign + Math.round(delta).toLocaleString();
+  }
+
+  el.innerHTML = `
+    ${statCard('First snapshot', new Date(h[0].snapshot_at * 1000).toLocaleDateString())}
+    ${statCard('Latest ' + stat.label.toLowerCase(), stat.format(last))}
+    ${statCard('Δ ' + stat.label, deltaDisplay)}
+    ${statCard('Peak ' + stat.label.toLowerCase(), stat.format(stat.higherIsBetter ? Math.max(...h.map(s => s[stat.key])) : Math.min(...h.map(s => s[stat.key]))))}
+    ${statCard('Snapshots', h.length)}
+  `;
 }
 
 function formatDelta(d) {
@@ -435,87 +548,249 @@ function formatDelta(d) {
 
 function formatRankDelta(from, to) {
   if (!from || !to) return '—';
-  const d = from - to;  // positive = improved (rank went down numerically)
+  const d = from - to;
   if (d > 0) return `▲ ${d.toLocaleString()}`;
   if (d < 0) return `▼ ${Math.abs(d).toLocaleString()}`;
   return '—';
 }
 
-function drawChart(history) {
-  const canvas = document.getElementById('ppChart');
+// ---- Smooth chart with tooltips ----
+function drawHistoryChart() {
+  const canvas = document.getElementById('historyChart');
+  if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
-  const h = 340;
+  const h = 380;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
   canvas.style.height = h + 'px';
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // reset before scale
   ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
 
-  const pad = { t: 30, r: 30, b: 40, l: 60 };
+  const history = historyChartState.history;
+  const stat = STAT_DEFS[historyChartState.activeStat];
+  const values = history.map(s => s[stat.key] ?? 0);
+
+  const pad = { t: 30, r: 30, b: 50, l: 70 };
   const cw = w - pad.l - pad.r;
   const ch = h - pad.t - pad.b;
 
-  const pps = history.map(s => s.pp);
-  const minPP = Math.min(...pps) * 0.995;
-  const maxPP = Math.max(...pps) * 1.005;
+  // Determine y-axis range with padding
+  const minV = Math.min(...values);
+  const maxV = Math.max(...values);
+  const range = maxV - minV;
+  // If range is zero (flat line), give it artificial range so it shows centered
+  const padded = range === 0
+    ? { lo: minV - Math.max(1, Math.abs(minV) * 0.01), hi: maxV + Math.max(1, Math.abs(maxV) * 0.01) }
+    : { lo: minV - range * 0.1, hi: maxV + range * 0.1 };
+
   const ts = history.map(s => s.snapshot_at);
-  const minT = ts[0], maxT = ts[ts.length-1];
+  const minT = ts[0], maxT = ts[ts.length - 1];
 
-  const x = t => pad.l + ((t - minT) / (maxT - minT || 1)) * cw;
-  const y = p => pad.t + (1 - (p - minPP) / (maxPP - minPP || 1)) * ch;
+  const xOf = t => pad.l + ((t - minT) / (maxT - minT || 1)) * cw;
+  const yOf = v => {
+    const norm = (v - padded.lo) / (padded.hi - padded.lo || 1);
+    // Invert Y for rank (lower = better = up on chart)
+    const flipped = stat.invertY ? norm : 1 - norm;
+    return pad.t + flipped * ch;
+  };
 
-  // Background grid
-  ctx.strokeStyle = 'rgba(45, 27, 85, 0.5)';
+  // Horizontal gridlines
+  ctx.strokeStyle = 'rgba(45, 27, 85, 0.45)';
   ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const yy = pad.t + (i / 4) * ch;
-    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(pad.l + cw, yy); ctx.stroke();
+  ctx.font = '11px JetBrains Mono';
+  ctx.fillStyle = '#6b5d8a';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 5; i++) {
+    const yy = pad.t + (i / 5) * ch;
+    ctx.beginPath();
+    ctx.setLineDash(i === 0 || i === 5 ? [] : [3, 3]);
+    ctx.moveTo(pad.l, yy);
+    ctx.lineTo(pad.l + cw, yy);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
-    const pp = maxPP - (i / 4) * (maxPP - minPP);
-    ctx.fillStyle = '#6b5d8a';
-    ctx.font = '11px JetBrains Mono';
-    ctx.textAlign = 'right';
-    ctx.fillText(Math.round(pp) + 'pp', pad.l - 10, yy + 4);
+    // Axis values: invert mapping for rank
+    const valFraction = stat.invertY ? (i / 5) : (1 - i / 5);
+    const v = padded.lo + valFraction * (padded.hi - padded.lo);
+    ctx.fillText(stat.formatAxis(v), pad.l - 10, yy + 4);
   }
 
-  // Area fill
+  // X-axis line at bottom
+  ctx.strokeStyle = 'rgba(45, 27, 85, 0.7)';
+  ctx.beginPath();
+  ctx.moveTo(pad.l, pad.t + ch);
+  ctx.lineTo(pad.l + cw, pad.t + ch);
+  ctx.stroke();
+
+  // Build smooth curve points (Catmull-Rom-ish via bezier)
+  const points = history.map((s, i) => ({ x: xOf(s.snapshot_at), y: yOf(values[i]), v: values[i], i }));
+
+  // Area fill (under the curve)
   const grad = ctx.createLinearGradient(0, pad.t, 0, pad.t + ch);
-  grad.addColorStop(0, 'rgba(255, 102, 170, 0.4)');
-  grad.addColorStop(1, 'rgba(255, 102, 170, 0)');
+  grad.addColorStop(0, stat.fillGrad[0]);
+  grad.addColorStop(1, stat.fillGrad[1]);
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.moveTo(x(history[0].snapshot_at), pad.t + ch);
-  history.forEach(s => ctx.lineTo(x(s.snapshot_at), y(s.pp)));
-  ctx.lineTo(x(history[history.length-1].snapshot_at), pad.t + ch);
+  ctx.moveTo(points[0].x, pad.t + ch);
+  drawSmoothCurve(ctx, points);
+  ctx.lineTo(points[points.length - 1].x, pad.t + ch);
   ctx.closePath();
   ctx.fill();
 
-  // Line
-  ctx.strokeStyle = '#ff66aa';
+  // Smooth line
+  ctx.strokeStyle = stat.color;
   ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.shadowColor = stat.color;
+  ctx.shadowBlur = 8;
   ctx.beginPath();
-  history.forEach((s, i) => {
-    const px = x(s.snapshot_at), py = y(s.pp);
-    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-  });
+  ctx.moveTo(points[0].x, points[0].y);
+  drawSmoothCurve(ctx, points);
   ctx.stroke();
+  ctx.shadowBlur = 0;
 
-  // Points
-  ctx.fillStyle = '#ff66aa';
-  history.forEach(s => {
-    ctx.beginPath();
-    ctx.arc(x(s.snapshot_at), y(s.pp), 3, 0, Math.PI * 2);
-    ctx.fill();
-  });
+  // Data points (only show end points + hovered, to keep it clean)
+  ctx.fillStyle = stat.color;
+  // First and last
+  drawDot(ctx, points[0]);
+  drawDot(ctx, points[points.length - 1]);
 
-  // X-axis labels (first and last)
+  // Hovered point — bigger, with vertical guide line
+  if (historyChartState.hover != null) {
+    const idx = historyChartState.hover.idx;
+    const p = points[idx];
+    if (p) {
+      // Vertical guide line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(p.x, pad.t);
+      ctx.lineTo(p.x, pad.t + ch);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Outer ring
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = stat.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // White inner dot
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // X-axis labels (date range)
   ctx.fillStyle = '#6b5d8a';
   ctx.font = '11px JetBrains Mono';
   ctx.textAlign = 'left';
   ctx.fillText(new Date(minT * 1000).toLocaleDateString(), pad.l, h - 15);
   ctx.textAlign = 'right';
   ctx.fillText(new Date(maxT * 1000).toLocaleDateString(), pad.l + cw, h - 15);
+  ctx.textAlign = 'center';
+  if (history.length >= 5) {
+    const midIdx = Math.floor(history.length / 2);
+    ctx.fillText(new Date(history[midIdx].snapshot_at * 1000).toLocaleDateString(), pad.l + cw / 2, h - 15);
+  }
+
+  // Stash points for hover hit-testing
+  historyChartState._points = points;
+  historyChartState._chartBounds = { left: pad.l, right: pad.l + cw, top: pad.t, bottom: pad.t + ch };
+}
+
+// Catmull-Rom-style smooth curve through points using cubic bezier segments
+function drawSmoothCurve(ctx, points) {
+  if (points.length < 2) return;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+
+    const tension = 0.18;
+    const cp1x = p1.x + (p2.x - p0.x) * tension;
+    const cp1y = p1.y + (p2.y - p0.y) * tension;
+    const cp2x = p2.x - (p3.x - p1.x) * tension;
+    const cp2y = p2.y - (p3.y - p1.y) * tension;
+
+    if (i === 0) ctx.moveTo(p1.x, p1.y);
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+  }
+}
+
+function drawDot(ctx, p) {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function handleChartHover(e) {
+  const canvas = e.currentTarget;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const points = historyChartState._points || [];
+  if (!points.length) return;
+
+  // Find closest point by x distance
+  let closest = null;
+  let closestDist = Infinity;
+  points.forEach(p => {
+    const d = Math.abs(p.x - mx);
+    if (d < closestDist) { closestDist = d; closest = p; }
+  });
+  if (!closest || closestDist > 40) {
+    // Too far from any point — clear hover
+    if (historyChartState.hover) {
+      historyChartState.hover = null;
+      drawHistoryChart();
+      document.getElementById('chartTooltip').style.display = 'none';
+    }
+    return;
+  }
+
+  if (!historyChartState.hover || historyChartState.hover.idx !== closest.i) {
+    historyChartState.hover = { idx: closest.i };
+    drawHistoryChart();
+  }
+
+  // Position tooltip
+  const tooltip = document.getElementById('chartTooltip');
+  const stat = STAT_DEFS[historyChartState.activeStat];
+  const snap = historyChartState.history[closest.i];
+  const date = new Date(snap.snapshot_at * 1000);
+  const dateStr = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const timeStr = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+  tooltip.innerHTML = `
+    <div class="tooltip-date">${dateStr} <span class="tooltip-time">${timeStr}</span></div>
+    <div class="tooltip-row" style="color: ${stat.color}"><span>${stat.label}</span><strong>${stat.format(snap[stat.key])}</strong></div>
+    ${historyChartState.activeStat !== 'pp' ? `<div class="tooltip-row"><span>PP</span><strong>${Math.round(snap.pp)}pp</strong></div>` : ''}
+    ${historyChartState.activeStat !== 'global_rank' && snap.global_rank ? `<div class="tooltip-row"><span>Rank</span><strong>#${snap.global_rank.toLocaleString()}</strong></div>` : ''}
+    ${historyChartState.activeStat !== 'accuracy' && snap.accuracy ? `<div class="tooltip-row"><span>Accuracy</span><strong>${snap.accuracy.toFixed(2)}%</strong></div>` : ''}
+  `;
+  tooltip.style.display = 'block';
+
+  // Position relative to the chart-wrap parent
+  const wrapRect = canvas.parentElement.getBoundingClientRect();
+  const offsetX = closest.x;
+  const offsetY = closest.y;
+  // Show tooltip to the right of the point unless near right edge
+  const showOnRight = offsetX < wrapRect.width - 200;
+  tooltip.style.left = (showOnRight ? offsetX + 16 : offsetX - 200) + 'px';
+  tooltip.style.top = Math.max(10, offsetY - 60) + 'px';
 }
 
 // ---------------- FAVORITES ----------------
