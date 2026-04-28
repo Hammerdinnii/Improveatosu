@@ -58,6 +58,7 @@ async function route(request, env, context, url) {
     const username = (url.searchParams.get('user') || '').trim();
     const mode = url.searchParams.get('mode') || 'osu';
     const strategy = url.searchParams.get('strategy') || 'push';
+    const refresh = url.searchParams.get('refresh');
     if (!username) return error('Missing "user" param');
 
     const user = await getUser(env, username, mode);
@@ -65,7 +66,10 @@ async function route(request, env, context, url) {
     const analysis = analyzeSkill(scores, user);
     if (!analysis) return json({ recommendations: [] });
 
-    const recs = await generateRecommendations(env, analysis, mode, strategy);
+    // Public lookups don't get per-user history (we don't know who's asking)
+    // but we do seed the randomness so each request gives different results
+    const seed = refresh ? Date.now() : Math.floor(Date.now() / 60000); // stable for 1min, refresh forces new
+    const recs = await generateRecommendations(env, analysis, mode, strategy, { seed });
     context.waitUntil(logRecommendations(env, recs, mode, strategy));
     return json({ user: publicUserSummary(user), recommendations: publicRecs(recs) });
   }
@@ -75,6 +79,7 @@ async function route(request, env, context, url) {
     const session = await requireAuth(request, env);
     const mode = url.searchParams.get('mode') || 'osu';
     const strategy = url.searchParams.get('strategy') || 'push';
+    const refresh = url.searchParams.get('refresh');
 
     const user = await getUserById(env, session.user.id, mode);
     const scores = await getTopScores(env, user.id, mode, 100);
@@ -83,8 +88,14 @@ async function route(request, env, context, url) {
 
     context.waitUntil(recordPPSnapshot(env, user.id, mode, user.statistics));
 
-    const recs = await generateRecommendations(env, analysis, mode, strategy);
+    // Personalized: use user's history for variety + fresh seed for shuffle
+    const seed = refresh ? Date.now() : Math.floor(Date.now() / 60000);
+    const recs = await generateRecommendations(env, analysis, mode, strategy, {
+      seed,
+      userId: session.user.id,
+    });
     context.waitUntil(logRecommendations(env, recs, mode, strategy));
+    context.waitUntil(logUserRecommendations(env, session.user.id, recs, mode, strategy));
 
     return json({
       user: publicUserSummary(user),
@@ -159,13 +170,51 @@ async function route(request, env, context, url) {
   return error('Not found', 404);
 }
 
-// ---------- helpers ----------
-async function logRecommendations(env, recs, mode, strategy) {
-  if (!recs || !recs.length) return;
+// Per-user recommendation history for the variety system.
+// Writes to user_recommendation_log so the recommender can deprioritize recently-shown maps.
+async function logUserRecommendations(env, userId, buckets, mode, strategy) {
+  if (!userId || !buckets || !buckets.length) return;
   const ts = now();
   const batch = [];
 
-  for (const bm of recs.slice(0, 10)) {
+  // Flatten buckets and dedupe — user only sees a map once per request even if it's in 2 buckets
+  const seen = new Set();
+  for (const bucket of buckets) {
+    for (const bm of (bucket.recommendations || [])) {
+      if (seen.has(bm.id)) continue;
+      seen.add(bm.id);
+      batch.push(env.DB.prepare(`
+        INSERT INTO user_recommendation_log (user_id, beatmap_id, mode, strategy, shown_count, last_shown)
+        VALUES (?, ?, ?, ?, 1, ?)
+        ON CONFLICT(user_id, beatmap_id, mode, strategy) DO UPDATE SET
+          shown_count = shown_count + 1,
+          last_shown = excluded.last_shown
+      `).bind(userId, bm.id, mode, strategy, ts));
+    }
+  }
+
+  try { await env.DB.batch(batch); }
+  catch (e) { console.error('logUserRecommendations failed:', e); }
+}
+
+// ---------- helpers ----------
+async function logRecommendations(env, buckets, mode, strategy) {
+  if (!buckets || !buckets.length) return;
+  const ts = now();
+  const batch = [];
+
+  // Flatten buckets and dedupe by beatmap id
+  const seen = new Set();
+  const flat = [];
+  for (const bucket of buckets) {
+    for (const bm of (bucket.recommendations || []).slice(0, 10)) {
+      if (seen.has(bm.id)) continue;
+      seen.add(bm.id);
+      flat.push(bm);
+    }
+  }
+
+  for (const bm of flat) {
     batch.push(env.DB.prepare(`
       INSERT INTO recommendation_counts (beatmap_id, mode, strategy, count, last_updated)
       VALUES (?, ?, ?, 1, ?)
@@ -233,24 +282,32 @@ function publicAnalysis(a) {
   };
 }
 
-function publicRecs(recs) {
-  return recs.map(bm => {
-    const set = bm.beatmapset || {};
-    return {
-      id: bm.id,
-      beatmapset_id: set.id || bm.beatmapset_id,
-      title: set.title,
-      artist: set.artist,
-      creator: set.creator,
-      version: bm.version,
-      stars: bm.difficulty_rating,
-      bpm: bm.bpm,
-      length: bm.total_length,
-      mode: bm.mode,
-      playcount: bm.playcount,
-      cover_url: set.covers?.['card@2x'] || set.covers?.card,
-      url: `https://osu.ppy.sh/beatmapsets/${set.id || bm.beatmapset_id}#${bm.mode || 'osu'}/${bm.id}`,
-      estPP: bm.estPP,
-    };
-  });
+function publicRecs(buckets) {
+  if (!Array.isArray(buckets)) return [];
+  return buckets.map(bucket => ({
+    mod: bucket.mod,
+    label: bucket.label,
+    stats: bucket.stats,
+    recommendations: (bucket.recommendations || []).map(bm => {
+      const set = bm.beatmapset || {};
+      return {
+        id: bm.id,
+        beatmapset_id: set.id || bm.beatmapset_id,
+        title: set.title,
+        artist: set.artist,
+        creator: set.creator,
+        version: bm.version,
+        stars: bm.difficulty_rating,
+        effectiveStars: bm.effectiveStars,
+        bpm: bm.bpm,
+        length: bm.total_length,
+        mode: bm.mode,
+        playcount: bm.playcount,
+        cover_url: set.covers?.['card@2x'] || set.covers?.card,
+        url: `https://osu.ppy.sh/beatmapsets/${set.id || bm.beatmapset_id}#${bm.mode || 'osu'}/${bm.id}`,
+        estPP: bm.estPP,
+        appliedMod: bm.appliedMod,
+      };
+    }),
+  }));
 }
