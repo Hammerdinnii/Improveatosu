@@ -223,6 +223,11 @@ async function publicLookup() {
     const data = await res.json();
     clearStatus();
 
+    const buckets = data.recommendations || [];
+    const sectionsHtml = buckets.length
+      ? buckets.map(s => renderModSection(s, new Set())).join('')
+      : `<div class="empty"><div class="icon">🔍</div><h3>No recommendations found</h3></div>`;
+
     resultEl.innerHTML = `
       ${renderProfileBlock(data.user)}
       <section class="slide-in" style="margin-bottom: 32px;">
@@ -230,9 +235,7 @@ async function publicLookup() {
           <h3>Recommended maps</h3>
           <span class="sub">public view · ${mode}</span>
         </div>
-        <div class="map-list">
-          ${data.recommendations.map(m => renderMapCard(m, false)).join('')}
-        </div>
+        ${sectionsHtml}
       </section>
     `;
   } catch (e) {
@@ -278,12 +281,13 @@ async function renderDashboard() {
 
 let dashboardData = null;
 
-async function loadDashboard(strategy) {
+async function loadDashboard(strategy, refresh = false) {
   const body = document.getElementById('dashboardBody');
-  setStatus(`Loading ${strategy} recommendations for ${modeCache}…`);
+  setStatus(`${refresh ? 'Re-rolling' : 'Loading'} ${strategy} recommendations for ${modeCache}…`);
 
   try {
-    const res = await fetch(`/api/recommend?mode=${modeCache}&strategy=${strategy}`);
+    const url = `/api/recommend?mode=${modeCache}&strategy=${strategy}${refresh ? '&refresh=1' : ''}`;
+    const res = await fetch(url);
     if (res.status === 401) {
       app.innerHTML = `<div class="status error">Session expired. <a href="/api/auth/login" style="color:var(--pink)">Login again</a>.</div>`;
       return;
@@ -295,6 +299,11 @@ async function loadDashboard(strategy) {
     const favSet = new Set((favs.favorites || []).map(f => f.beatmap_id));
 
     clearStatus();
+    const buckets = dashboardData.recommendations || [];
+    const sectionsHtml = buckets.length
+      ? buckets.map(s => renderModSection(s, favSet)).join('')
+      : `<div class="empty"><div class="icon">🔍</div><h3>No recommendations found</h3><p>Try a different strategy or mode.</p></div>`;
+
     body.innerHTML = `
       ${renderProfileBlock(dashboardData.user)}
       ${renderSkillSummary(dashboardData.analysis)}
@@ -302,17 +311,18 @@ async function loadDashboard(strategy) {
       <section class="slide-in">
         <div class="section-header">
           <h3>Recommended maps</h3>
-          <span class="sub">click tabs to switch strategy</span>
+          <span class="sub">grouped by mod · calibrated to your playstyle</span>
         </div>
-        <div class="tabs">
-          ${['push','farm','comfort','stretch'].map(k => {
-            const labels = { push: '🚀 Push PP', farm: '🌾 Farm', comfort: '🛋 Comfort', stretch: '🔥 Reach' };
-            return `<button class="tab ${k===strategy?'active':''}" data-strategy="${k}">${labels[k]}</button>`;
-          }).join('')}
+        <div class="strategy-bar">
+          <div class="tabs">
+            ${['push','farm','comfort','stretch'].map(k => {
+              const labels = { push: '🚀 Push PP', farm: '🌾 Farm', comfort: '🛋 Comfort', stretch: '🔥 Reach' };
+              return `<button class="tab ${k===strategy?'active':''}" data-strategy="${k}">${labels[k]}</button>`;
+            }).join('')}
+          </div>
+          <button class="refresh-btn" id="refreshBtn" title="Re-roll recommendations">🔄 Refresh</button>
         </div>
-        <div class="map-list">
-          ${dashboardData.recommendations.map(m => renderMapCard(m, true, favSet)).join('')}
-        </div>
+        ${sectionsHtml}
       </section>
     `;
 
@@ -320,6 +330,11 @@ async function loadDashboard(strategy) {
     body.querySelectorAll('.tab').forEach(btn => {
       btn.addEventListener('click', () => loadDashboard(btn.dataset.strategy));
     });
+    // Refresh button
+    const refreshBtn = document.getElementById('refreshBtn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => loadDashboard(strategy, true));
+    }
     // Favorite buttons
     body.querySelectorAll('.fav-btn').forEach(b => b.addEventListener('click', toggleFavorite));
   } catch (e) {
@@ -751,6 +766,42 @@ function renderModAnalysis(modAnalysis) {
   `;
 }
 
+function renderModSection(bucket, favSet) {
+  if (!bucket || !bucket.recommendations || !bucket.recommendations.length) return '';
+
+  const isNM = bucket.mod === 'NM';
+  const modIcon = isNM ? '🎮' : '🎧';
+  const modLabel = isNM ? 'NoMod' : bucket.mod;
+
+  let subtitle = '';
+  if (bucket.stats) {
+    const parts = [];
+    if (bucket.stats.percentage != null) {
+      parts.push(`${bucket.stats.percentage.toFixed(0)}% of your top plays`);
+    }
+    if (bucket.stats.ppDeltaVsNM != null && !isNM) {
+      const sign = bucket.stats.ppDeltaVsNM >= 0 ? '+' : '';
+      parts.push(`${sign}${bucket.stats.ppDeltaVsNM.toFixed(0)}% pp vs NoMod`);
+    }
+    subtitle = parts.join(' · ');
+  }
+
+  return `
+    <div class="mod-section slide-in">
+      <div class="mod-section-header">
+        <div class="mod-section-title">
+          <span class="mod-section-icon">${modIcon}</span>
+          <span>With <strong>${modLabel}</strong></span>
+        </div>
+        ${subtitle ? `<span class="mod-section-sub">${subtitle}</span>` : ''}
+      </div>
+      <div class="map-list">
+        ${bucket.recommendations.map(m => renderMapCard(m, true, favSet)).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderMapCard(m, showFav, favSet = new Set(), isFavView = false) {
   const meta = {
     beatmap_id: m.id,
@@ -762,6 +813,28 @@ function renderMapCard(m, showFav, favSet = new Set(), isFavView = false) {
     mode: m.mode || modeCache,
   };
   const isFav = favSet.has(m.id);
+
+  // Read from appliedMod (what the backend sends)
+  const mod = m.appliedMod || m.suggestedMod;
+  const showEffective = mod && mod !== 'NM' && m.effectiveStars;
+  const starsDisplay = showEffective
+    ? `★ ${m.effectiveStars.toFixed(2)} <span style="opacity:0.6;font-weight:400">(${(m.stars || 0).toFixed(2)} raw)</span>`
+    : `★ ${(m.stars || 0).toFixed(2)}`;
+
+  // Effective BPM for DT/NC/HT
+  let effectiveBPM = null;
+  if (mod && m.bpm) {
+    if (mod.includes('DT') || mod.includes('NC')) effectiveBPM = m.bpm * 1.5;
+    else if (mod.includes('HT')) effectiveBPM = m.bpm * 0.75;
+  }
+  const bpmDisplay = effectiveBPM && Math.abs(effectiveBPM - m.bpm) > 1
+    ? `${Math.round(effectiveBPM)} BPM <span style="opacity:0.6;font-weight:400">(${Math.round(m.bpm)})</span>`
+    : m.bpm ? `${Math.round(m.bpm)} BPM` : '';
+
+  const modBadge = mod && mod !== 'NM'
+    ? `<span class="badge mod">+${mod}</span>`
+    : '';
+
   return `
     <div class="map-card">
       <img class="map-cover" src="${m.cover_url || ''}" alt="" onerror="this.style.display='none'"/>
@@ -769,14 +842,15 @@ function renderMapCard(m, showFav, favSet = new Set(), isFavView = false) {
         <div class="map-title">${escapeHtml(m.title || 'Unknown')} [${escapeHtml(m.version || '')}]</div>
         <div class="map-artist">${escapeHtml(m.artist || '')}${m.creator ? ' · mapped by ' + escapeHtml(m.creator) : ''}</div>
         <div class="map-meta">
-          <span class="badge stars">★ ${(m.stars || 0).toFixed(2)}</span>
-          ${m.bpm ? `<span class="badge bpm">${Math.round(m.bpm)} BPM</span>` : ''}
+          ${modBadge}
+          <span class="badge stars">${starsDisplay}</span>
+          ${bpmDisplay ? `<span class="badge bpm">${bpmDisplay}</span>` : ''}
           ${m.length ? `<span class="badge length">${fmtLen(m.length)}</span>` : ''}
           ${m.playcount ? `<span>▶ ${numFmt(m.playcount)} plays</span>` : ''}
         </div>
       </div>
       <div class="map-action">
-        ${m.estPP ? `<div class="pp-estimate">~${Math.round(m.estPP)}<span class="pp-label">est. pp</span></div>` : ''}
+        ${m.estPP ? `<div class="pp-estimate">+${Math.round(m.estPP)}<span class="pp-label">est. pp</span></div>` : ''}
         <div style="display: flex; gap: 6px;">
           ${showFav && currentUser ? `<button class="fav-btn ${isFav?'active':''}" data-id="${m.id}" data-meta='${escapeHtml(JSON.stringify(meta))}'>${isFav ? '★ Saved' : '☆ Save'}</button>` : ''}
           <a class="map-link" href="${m.url}" target="_blank" rel="noopener">Open →</a>
